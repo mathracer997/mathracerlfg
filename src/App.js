@@ -24,7 +24,7 @@ const FIREBASE_CONFIG = {
 };
 // ───────────────────────────────────────────────────────────────────────────
 
-let db = null;
+let db: any = null;
 try {
   const app = initializeApp(FIREBASE_CONFIG);
   db = getDatabase(app);
