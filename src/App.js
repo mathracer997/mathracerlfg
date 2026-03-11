@@ -34,7 +34,7 @@ function generateQuestion() {
   const op = ops[Math.floor(Math.random() * ops.length)];
   let a, b, answer;
   if (op === "+") { a = Math.floor(Math.random()*90)+10; b = Math.floor(Math.random()*90)+10; answer = a+b; }
-  else if (op === "−") { a = Math.floor(Math.random()*90)+10; b = Math.floor(Math.random()*90)+10; if(b>a){let t=a;a=b;b=t;} answer=a-b; }
+  else if (op === "−") { a = Math.floor(Math.random()*90)+10; b = Math.floor(Math.random()*90)+10; if(b>a){var t=a;a=b;b=t;} answer=a-b; }
   else if (op === "×") { a = Math.floor(Math.random()*9)+2; b = Math.floor(Math.random()*9)+2; answer=a*b; }
   else { answer=Math.floor(Math.random()*19)+2; b=Math.floor(Math.random()*9)+2; a=answer*b; }
   return { a, b, op, answer };
@@ -50,9 +50,21 @@ function generateLobbyCode() {
 }
 
 function formatTime(ms) {
-  if (!ms && ms !== 0) return "--:--";
-  const s = Math.floor(ms / 1000);
-  return Math.floor(s/60) + ":" + (s%60).toString().padStart(2,"0");
+  if (!ms && ms !== 0) return "--:--.---";
+  const totalMs = Math.floor(ms);
+  const minutes = Math.floor(totalMs / 60000);
+  const seconds = Math.floor((totalMs % 60000) / 1000);
+  const millis = totalMs % 1000;
+  return minutes + ":" + seconds.toString().padStart(2,"0") + "." + millis.toString().padStart(3,"0");
+}
+
+function formatTimeShort(ms) {
+  if (!ms && ms !== 0) return "--:--.--";
+  const totalMs = Math.floor(ms);
+  const minutes = Math.floor(totalMs / 60000);
+  const seconds = Math.floor((totalMs % 60000) / 1000);
+  const millis = Math.floor((totalMs % 1000) / 10);
+  return minutes + ":" + seconds.toString().padStart(2,"0") + "." + millis.toString().padStart(2,"0");
 }
 
 export default function MathRacer() {
@@ -82,9 +94,10 @@ export default function MathRacer() {
   const [mpStreak, setMpStreak] = useState(0);
   const [mpStartTime, setMpStartTime] = useState(null);
   const [mpElapsed, setMpElapsed] = useState(null);
-  const [, setMpWrongCount] = useState(0);
   const [lobbyError, setLobbyError] = useState("");
   const [firebaseReady] = useState(!!db);
+  // Scoreboard: array of { name, time, correct, mistakes, date }
+  const [scoreboard, setScoreboard] = useState([]);
 
   const inputRef = useRef(null);
   const mpInputRef = useRef(null);
@@ -111,17 +124,31 @@ export default function MathRacer() {
 
   useEffect(() => {
     if (screen === "game" && startTime) {
-      timerRef.current = setInterval(() => setElapsed(Date.now() - startTime), 100);
+      timerRef.current = setInterval(() => setElapsed(Date.now() - startTime), 10);
     }
     return () => clearInterval(timerRef.current);
   }, [screen, startTime]);
 
   useEffect(() => {
     if (screen === "mp_race" && mpStartTime) {
-      mpTimerRef.current = setInterval(() => setMpElapsed(Date.now() - mpStartTime), 100);
+      mpTimerRef.current = setInterval(() => setMpElapsed(Date.now() - mpStartTime), 10);
     }
     return () => clearInterval(mpTimerRef.current);
   }, [screen, mpStartTime]);
+
+  // Scoreboard listener
+  useEffect(() => {
+    if (!lobbyCode || !db) return;
+    const sbRef = ref(db, "scoreboards/" + lobbyCode);
+    const unsub = onValue(sbRef, function(snap) {
+      const data = snap.val();
+      if (!data) { setScoreboard([]); return; }
+      const entries = Object.values(data);
+      entries.sort(function(a, b) { return (a.time || Infinity) - (b.time || Infinity); });
+      setScoreboard(entries);
+    });
+    return () => unsub();
+  }, [lobbyCode]);
 
   useEffect(() => {
     if (!lobbyCode || !db) return;
@@ -132,7 +159,7 @@ export default function MathRacer() {
       setLobby(data);
       if (data.status === "racing" && screen === "mp_lobby") {
         setMpQuestions(data.questions || []);
-        setMpScore(0); setMpInput(""); setMpFeedback(null); setMpStreak(0); setMpWrongCount(0);
+        setMpScore(0); setMpInput(""); setMpFeedback(null); setMpStreak(0);
         setMpStartTime(data.startedAt);
         setScreen("mp_race");
       }
@@ -190,6 +217,7 @@ export default function MathRacer() {
     players[pid] = { name: playerName.trim(), score: 0, finished: false, finishTime: null };
     await set(ref(db, "lobbies/" + code), { code, status: "waiting", host: pid, totalQuestions, players });
     setLobbyCode(code);
+    setScoreboard([]);
     setScreen("mp_lobby");
   }
 
@@ -230,14 +258,19 @@ export default function MathRacer() {
       mpFeedbackRef.current = setTimeout(async function() {
         const next = mpScore + 1;
         const pid = playerIdRef.current;
+        const name = playerName.trim();
         if (next >= totalQuestions) {
           clearInterval(mpTimerRef.current);
           const ft = Date.now() - mpStartTime;
           setMpElapsed(ft);
           const u = {};
-          u["lobbies/" + lobbyCode + "/players/" + pid] = { name: playerName.trim(), score: next, finished: true, finishTime: ft };
+          u["lobbies/" + lobbyCode + "/players/" + pid] = { name, score: next, finished: true, finishTime: ft };
           await update(ref(db), u);
-          setMpScore(next); setScreen("mp_results");
+          // Save to scoreboard
+          const sbEntry = { name, time: ft, correct: next, mistakes: 0, date: Date.now() };
+          await set(ref(db, "scoreboards/" + lobbyCode + "/" + pid), sbEntry);
+          setMpScore(next);
+          setScreen("mp_results");
         } else {
           const u = {};
           u["lobbies/" + lobbyCode + "/players/" + pid + "/score"] = next;
@@ -247,7 +280,6 @@ export default function MathRacer() {
       }, 300);
     } else {
       setMpFeedback("wrong");
-      setMpWrongCount(function(w) { return w + 1; });
       setMpStreak(0);
       clearTimeout(mpFeedbackRef.current);
       mpFeedbackRef.current = setTimeout(function() { setMpInput(""); setMpFeedback(null); }, 500);
@@ -258,7 +290,7 @@ export default function MathRacer() {
     if (db && lobbyCode && playerIdRef.current) {
       await remove(ref(db, "lobbies/" + lobbyCode + "/players/" + playerIdRef.current));
     }
-    setLobby(null); setLobbyCode(""); setJoinInput(""); setScreen("home");
+    setLobby(null); setLobbyCode(""); setJoinInput(""); setScoreboard([]); setScreen("home");
   }
 
   const isHost = lobby && playerId && lobby.host === playerId;
@@ -302,6 +334,12 @@ export default function MathRacer() {
     .tab.active { border-color:#1a1a1a; background:#1a1a1a; color:#fff; }
     .player-row { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid #f0f0ee; }
     .player-row:last-child { border-bottom:none; }
+    .sb-row { display:grid; grid-template-columns:28px 1fr auto; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid #f0f0ee; }
+    .sb-row:last-child { border-bottom:none; }
+    .sb-medal { font-size:16px; text-align:center; }
+    .sb-name { font-size:14px; color:#1a1a1a; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .sb-time { font-family:'DM Mono',monospace; font-size:13px; color:#1a1a1a; white-space:nowrap; }
+    .timer-display { font-family:'DM Mono',monospace; font-weight:500; color:#1a1a1a; font-size:14px; letter-spacing:0.02em; }
   `;
 
   function wrap(content) {
@@ -313,6 +351,7 @@ export default function MathRacer() {
     );
   }
 
+  // ── HOME ──────────────────────────────────────────────────────────────────
   if (screen === "home") return wrap(
     <div style={{ width:"min(440px,100%)", animation:"fadeUp 0.4s ease" }}>
       <div style={{ textAlign:"center", marginBottom:28 }}>
@@ -340,22 +379,23 @@ export default function MathRacer() {
       </button>
       {bestTimes[totalQuestions] && (
         <div style={{ textAlign:"center", fontSize:13, color:"#6b6b6b", marginTop:14 }}>
-          Personal best ({totalQuestions}q): <span style={{ fontFamily:"'DM Mono',monospace", color:"#1a1a1a", fontWeight:500 }}>{formatTime(bestTimes[totalQuestions])}</span>
+          Personal best ({totalQuestions}q): <span className="timer-display" style={{ fontSize:13 }}>{formatTime(bestTimes[totalQuestions])}</span>
         </div>
       )}
     </div>
   );
 
+  // ── SOLO GAME ─────────────────────────────────────────────────────────────
   if (screen === "game") return wrap(
     <div style={{ width:"min(460px,100%)", animation:"fadeUp 0.3s ease" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
         <span style={{ fontSize:15, fontWeight:500, color:"#1a1a1a" }}>Mathracer</span>
         <div style={{ display:"flex", gap:8 }}>
-          <span className="pill"><span style={{ fontFamily:"'DM Mono',monospace", fontWeight:500, color:"#1a1a1a" }}>{formatTime(elapsed)}</span></span>
+          <span className="pill"><span className="timer-display">{formatTime(elapsed)}</span></span>
           {streak >= 3 && <span className="pill" style={{ color:"#d97706", borderColor:"#fde68a", background:"#fffbeb" }}>🔥 {streak}</span>}
         </div>
       </div>
-      <div style={{ marginBottom:6 }}><div className="progress-track"><div className="progress-fill" style={{ width:(score/totalQuestions*100) + "%" }} /></div></div>
+      <div style={{ marginBottom:6 }}><div className="progress-track"><div className="progress-fill" style={{ width:(score/totalQuestions*100)+"%" }} /></div></div>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:24 }}>
         <span style={{ fontSize:12, color:"#9b9b9b" }}>Question {score+1} of {totalQuestions}</span>
         <span style={{ fontSize:12, color:"#9b9b9b" }}>{score} correct</span>
@@ -381,6 +421,7 @@ export default function MathRacer() {
     </div>
   );
 
+  // ── SOLO RESULT ───────────────────────────────────────────────────────────
   if (screen === "result") return wrap(
     <div style={{ width:"min(420px,100%)", animation:"popIn 0.4s ease", textAlign:"center" }}>
       <div style={{ fontSize:40, marginBottom:16 }}>🏁</div>
@@ -388,10 +429,14 @@ export default function MathRacer() {
       <p style={{ color:"#6b6b6b", fontSize:15, marginBottom:28 }}>You answered all {totalQuestions} questions.</p>
       <div className="card" style={{ padding:24, marginBottom:20 }}>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr" }}>
-          {[{label:"Time",value:formatTime(elapsed),mono:true},{label:"Correct",value:(totalQuestions-wrongCount)+"/"+totalQuestions},{label:"Mistakes",value:wrongCount}].map(function(item, i){
+          {[
+            { label:"Time", value: formatTime(elapsed), mono:true },
+            { label:"Correct", value: (totalQuestions-wrongCount)+"/"+totalQuestions },
+            { label:"Mistakes", value: wrongCount }
+          ].map(function(item, i){
             return (
               <div key={item.label} style={{ padding:"16px 12px", borderRight:i<2?"1px solid #f0f0ee":"none", textAlign:"center" }}>
-                <div style={{ fontSize:item.mono?22:26, fontWeight:600, color:"#1a1a1a", fontFamily:item.mono?"'DM Mono',monospace":"'DM Sans',sans-serif", letterSpacing:"-0.02em", marginBottom:4 }}>{item.value}</div>
+                <div style={{ fontSize:item.mono?15:26, fontWeight:600, color:"#1a1a1a", fontFamily:item.mono?"'DM Mono',monospace":"'DM Sans',sans-serif", letterSpacing:item.mono?"0.02em":"-0.02em", marginBottom:4 }}>{item.value}</div>
                 <div style={{ fontSize:12, color:"#9b9b9b" }}>{item.label}</div>
               </div>
             );
@@ -408,6 +453,7 @@ export default function MathRacer() {
     </div>
   );
 
+  // ── MP SETUP ──────────────────────────────────────────────────────────────
   if (screen === "mp_setup") return wrap(
     <div style={{ width:"min(420px,100%)", animation:"fadeUp 0.4s ease" }}>
       <button className="btn-ghost" onClick={function(){setScreen("home");}} style={{ marginBottom:24, padding:"8px 16px", fontSize:13 }}>← Back</button>
@@ -451,22 +497,24 @@ export default function MathRacer() {
     </div>
   );
 
+  // ── MP LOBBY ──────────────────────────────────────────────────────────────
   if (screen === "mp_lobby") return wrap(
-    <div style={{ width:"min(420px,100%)", animation:"fadeUp 0.4s ease" }}>
+    <div style={{ width:"min(460px,100%)", animation:"fadeUp 0.4s ease" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:24 }}>
         <h2 style={{ fontSize:22, fontWeight:600, color:"#1a1a1a" }}>Lobby</h2>
         <button className="btn-ghost" onClick={leaveLobby} style={{ padding:"7px 14px", fontSize:13 }}>Leave</button>
       </div>
-      <div className="card" style={{ padding:20, textAlign:"center", marginBottom:16 }}>
+      <div className="card" style={{ padding:20, textAlign:"center", marginBottom:14 }}>
         <div style={{ fontSize:12, color:"#9b9b9b", letterSpacing:2, textTransform:"uppercase", marginBottom:8 }}>Lobby Code</div>
         <div style={{ fontFamily:"'DM Mono',monospace", fontSize:36, fontWeight:500, letterSpacing:10, color:"#1a1a1a" }}>{lobbyCode}</div>
         <div style={{ fontSize:13, color:"#9b9b9b", marginTop:8 }}>Share this code with your friends</div>
       </div>
-      <div className="card" style={{ padding:20, marginBottom:16 }}>
+
+      {/* Players waiting */}
+      <div className="card" style={{ padding:20, marginBottom:14 }}>
         <div style={{ fontSize:13, color:"#9b9b9b", marginBottom:12 }}>Players ({players.length})</div>
         {players.map(function(entry) {
-          const pid = entry[0];
-          const p = entry[1];
+          const pid = entry[0]; const p = entry[1];
           return (
             <div key={pid} className="player-row">
               <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -483,6 +531,23 @@ export default function MathRacer() {
           );
         })}
       </div>
+
+      {/* Scoreboard */}
+      {scoreboard.length > 0 && (
+        <div className="card" style={{ padding:20, marginBottom:14 }}>
+          <div style={{ fontSize:13, color:"#9b9b9b", marginBottom:12 }}>🏆 Lobby scoreboard</div>
+          {scoreboard.map(function(entry, i) {
+            return (
+              <div key={i} className="sb-row">
+                <span className="sb-medal">{i===0?"🥇":i===1?"🥈":i===2?"🥉":(i+1)+"."}</span>
+                <span className="sb-name">{entry.name}</span>
+                <span className="sb-time">{formatTime(entry.time)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div style={{ fontSize:13, color:"#9b9b9b", marginBottom:12, textAlign:"center", animation:"pulse 2s infinite" }}>
         {isHost ? "Start the race when everyone has joined." : "Waiting for the host to start..."}
       </div>
@@ -494,19 +559,19 @@ export default function MathRacer() {
     </div>
   );
 
+  // ── MP RACE ───────────────────────────────────────────────────────────────
   if (screen === "mp_race") return wrap(
     <div style={{ width:"min(520px,100%)", animation:"fadeUp 0.3s ease" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
         <span style={{ fontSize:15, fontWeight:500, color:"#1a1a1a" }}>Mathracer</span>
         <span className="pill">
-          <span style={{ fontFamily:"'DM Mono',monospace", fontWeight:500, color:"#1a1a1a" }}>{formatTime(mpElapsed || (mpStartTime ? Date.now()-mpStartTime : 0))}</span>
+          <span className="timer-display">{formatTimeShort(mpElapsed || (mpStartTime ? Date.now()-mpStartTime : 0))}</span>
         </span>
       </div>
       <div className="card" style={{ padding:"12px 16px", marginBottom:14 }}>
         <div style={{ fontSize:11, color:"#9b9b9b", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Live standings</div>
         {players.slice().sort(function(a,b){ return (b[1].score||0)-(a[1].score||0); }).map(function(entry, i) {
-          const pid = entry[0];
-          const p = entry[1];
+          const pid = entry[0]; const p = entry[1];
           return (
             <div key={pid} style={{ marginBottom: i < players.length-1 ? 8 : 0 }}>
               <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
@@ -550,23 +615,24 @@ export default function MathRacer() {
     </div>
   );
 
+  // ── MP RESULTS ────────────────────────────────────────────────────────────
   if (screen === "mp_results") return wrap(
-    <div style={{ width:"min(420px,100%)", animation:"popIn 0.4s ease", textAlign:"center" }}>
+    <div style={{ width:"min(460px,100%)", animation:"popIn 0.4s ease", textAlign:"center" }}>
       <div style={{ fontSize:40, marginBottom:16 }}>🏁</div>
       <h2 style={{ fontSize:28, fontWeight:600, color:"#1a1a1a", letterSpacing:"-0.03em", marginBottom:6 }}>Race complete!</h2>
       <p style={{ color:"#6b6b6b", fontSize:15, marginBottom:24 }}>
-        Your time: <span style={{ fontFamily:"'DM Mono',monospace", color:"#1a1a1a", fontWeight:500 }}>{formatTime(mpElapsed)}</span>
+        Your time: <span className="timer-display">{formatTime(mpElapsed)}</span>
       </p>
-      <div className="card" style={{ padding:20, marginBottom:20, textAlign:"left" }}>
-        <div style={{ fontSize:13, color:"#9b9b9b", marginBottom:12 }}>Final standings</div>
+
+      {/* Race results */}
+      <div className="card" style={{ padding:20, marginBottom:14, textAlign:"left" }}>
+        <div style={{ fontSize:13, color:"#9b9b9b", marginBottom:12 }}>Race results</div>
         {players.slice().sort(function(a,b){
           if (a[1].finished && b[1].finished) return (a[1].finishTime||Infinity)-(b[1].finishTime||Infinity);
-          if (a[1].finished) return -1;
-          if (b[1].finished) return 1;
+          if (a[1].finished) return -1; if (b[1].finished) return 1;
           return (b[1].score||0)-(a[1].score||0);
         }).map(function(entry, i) {
-          const pid = entry[0];
-          const p = entry[1];
+          const pid = entry[0]; const p = entry[1];
           return (
             <div key={pid} className="player-row">
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -576,13 +642,28 @@ export default function MathRacer() {
                   <div style={{ fontSize:12, color:"#9b9b9b" }}>{p.score||0}/{totalQuestions} correct</div>
                 </div>
               </div>
-              <div style={{ fontFamily:"'DM Mono',monospace", fontSize:14, color: p.finished?"#1a1a1a":"#9b9b9b" }}>
-                {p.finished ? formatTime(p.finishTime) : "DNF"}
-              </div>
+              <div className="sb-time">{p.finished ? formatTime(p.finishTime) : "DNF"}</div>
             </div>
           );
         })}
       </div>
+
+      {/* All-time scoreboard for this lobby */}
+      {scoreboard.length > 0 && (
+        <div className="card" style={{ padding:20, marginBottom:20, textAlign:"left" }}>
+          <div style={{ fontSize:13, color:"#9b9b9b", marginBottom:12 }}>🏆 Lobby scoreboard — all races</div>
+          {scoreboard.map(function(entry, i) {
+            return (
+              <div key={i} className="sb-row">
+                <span className="sb-medal">{i===0?"🥇":i===1?"🥈":i===2?"🥉":(i+1)+"."}</span>
+                <span className="sb-name">{entry.name}</span>
+                <span className="sb-time">{formatTime(entry.time)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div style={{ display:"flex", gap:10 }}>
         <button className="btn-primary" onClick={function(){setScreen("mp_lobby");}} style={{ flex:1, padding:13 }}>Play again</button>
         <button className="btn-ghost" onClick={leaveLobby} style={{ flex:1, padding:13 }}>Home</button>
