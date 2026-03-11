@@ -82,7 +82,7 @@ export default function MathRacer() {
   const [mpStreak, setMpStreak] = useState(0);
   const [mpStartTime, setMpStartTime] = useState(null);
   const [mpElapsed, setMpElapsed] = useState(null);
-  const [mpWrongCount, setMpWrongCount] = useState(0);
+  const [, setMpWrongCount] = useState(0);
   const [lobbyError, setLobbyError] = useState("");
   const [firebaseReady] = useState(!!db);
 
