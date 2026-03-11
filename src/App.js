@@ -7,7 +7,6 @@ import {
   get,
   onValue,
   update,
-  push,
   remove,
 } from "firebase/database";
 
@@ -99,12 +98,12 @@ export default function MathRacer() {
   const [mpScore, setMpScore] = useState(0);
   const [mpInput, setMpInput] = useState("");
   const [mpFeedback, setMpFeedback] = useState(null);
-  const [mpWrongCount, setMpWrongCount] = useState(0);
+  const [, setMpWrongCount] = useState(0);
   const [mpStreak, setMpStreak] = useState(0);
   const [mpStartTime, setMpStartTime] = useState(null);
   const [mpElapsed, setMpElapsed] = useState(null);
   const [lobbyError, setLobbyError] = useState("");
-  const [firebaseReady, setFirebaseReady] = useState(!!db);
+  const [firebaseReady] = useState(!!db);
 
   const inputRef = useRef(null);
   const mpInputRef = useRef(null);
